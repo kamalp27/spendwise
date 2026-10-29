@@ -1,7 +1,7 @@
 import axios from 'axios';
 
 export const DEFAULT_API_BASE_URL = 'http://localhost:5000/api/v1';
-export const DEFAULT_TIMEOUT_MS = 10000;
+export const DEFAULT_TIMEOUT_MS = 30000;
 
 /**
  * Resolves and normalizes the backend API base URL from Vite environment variables.

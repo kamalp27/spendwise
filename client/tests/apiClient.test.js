@@ -25,9 +25,9 @@ describe('API Client Configuration & Error Handling', () => {
       expect(getApiBaseUrl()).toBe('http://localhost:5000/api/v1');
     });
 
-    it('has a default request timeout of 10000ms', () => {
-      expect(DEFAULT_TIMEOUT_MS).toBe(10000);
-      expect(apiClient.defaults.timeout).toBe(10000);
+    it('has a default request timeout of 30000ms', () => {
+      expect(DEFAULT_TIMEOUT_MS).toBe(30000);
+      expect(apiClient.defaults.timeout).toBe(30000);
     });
 
     it('sets standard JSON headers and CSRF custom header', () => {
@@ -278,7 +278,7 @@ describe('API Client Configuration & Error Handling', () => {
 
     it('identifies ECONNABORTED as a timeout error', async () => {
       apiClient.defaults.adapter = async () => {
-        const error = new Error('timeout of 10000ms exceeded');
+        const error = new Error('timeout of 30000ms exceeded');
         error.request = {};
         error.code = 'ECONNABORTED';
         throw error;
