@@ -15,13 +15,18 @@ import { csrfProtection } from './middleware/csrf.js';
 import { notFoundHandler } from './middleware/not-found.js';
 import { errorHandler } from './middleware/error-handler.js';
 
-export function createApp() {
+export function createApp({ trustProxy = env.TRUST_PROXY } = {}) {
   const app = express();
 
-  // 1. Security Headers via Helmet
+  // 1. Reverse Proxy Trust Configuration (Render / production PaaS)
+  if (trustProxy !== false) {
+    app.set('trust proxy', trustProxy);
+  }
+
+  // 2. Security Headers via Helmet
   app.use(helmet());
 
-  // 2. Strict CORS Configuration
+  // 3. Strict CORS Configuration
   const allowedOrigin = env.CLIENT_URL;
   app.use(
     cors({
@@ -49,7 +54,7 @@ export function createApp() {
     })
   );
 
-  // 3. API Rate Limiting (disabled or high allowance during automated tests)
+  // 4. API Rate Limiting (disabled or high allowance during automated tests)
   const limiter = rateLimit({
     windowMs: env.RATE_LIMIT_WINDOW_MS,
     max: env.isTest ? 1000 : env.RATE_LIMIT_MAX,
@@ -65,17 +70,17 @@ export function createApp() {
   });
   app.use('/api', limiter);
 
-  // 4. Body & Cookie Parsing
+  // 5. Body & Cookie Parsing
   app.use(express.json({ limit: '10kb' }));
   app.use(cookieParser(env.SESSION_SECRET));
 
-  // 5. Public Health Routes (Database-independent)
+  // 6. Public Health Routes (Database-independent)
   app.use('/api/v1', healthRoutes);
 
-  // 6. Authentication Foundation Routes
+  // 7. Authentication Foundation Routes
   app.use('/api/v1/auth', authRoutes);
 
-  // 7. Authenticated Domain Routes (Guarded by sessionAuthMiddleware and csrfProtection)
+  // 8. Authenticated Domain Routes (Guarded by sessionAuthMiddleware and csrfProtection)
   app.use('/api/v1', sessionAuthMiddleware, csrfProtection, [
     categoryRoutes,
     expenseRoutes,
@@ -83,10 +88,10 @@ export function createApp() {
     analyticsRoutes
   ]);
 
-  // 8. Handle Unknown Routes (404)
+  // 9. Handle Unknown Routes (404)
   app.use(notFoundHandler);
 
-  // 9. Centralized Error Handler (500, parsing errors, CORS errors, AppErrors)
+  // 10. Centralized Error Handler (500, parsing errors, CORS errors, AppErrors)
   app.use(errorHandler);
 
   return app;

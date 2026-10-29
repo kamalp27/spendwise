@@ -98,6 +98,32 @@ export function getEnvConfig(envSource = process.env) {
     );
   }
 
+  let trustProxy;
+  const rawTrustProxy =
+    envSource.TRUST_PROXY !== undefined ? String(envSource.TRUST_PROXY).trim() : '';
+
+  if (rawTrustProxy.length > 0) {
+    const lower = rawTrustProxy.toLowerCase();
+    if (lower === 'true') {
+      trustProxy = true;
+    } else if (lower === 'false') {
+      trustProxy = false;
+    } else if (/^-?\d+$/.test(rawTrustProxy)) {
+      trustProxy = parseInt(rawTrustProxy, 10);
+      if (trustProxy < 0) {
+        throw new Error('TRUST_PROXY cannot be a negative integer.');
+      }
+    } else if (!Number.isNaN(Number(rawTrustProxy))) {
+      throw new Error(`Invalid TRUST_PROXY hop count "${rawTrustProxy}". Hop count must be an integer.`);
+    } else {
+      trustProxy = rawTrustProxy;
+    }
+  } else {
+    // Render and modern PaaS deploy behind an ingress reverse proxy.
+    // Default to 1 (single reverse proxy hop) in production, false otherwise.
+    trustProxy = nodeEnv === 'production' ? 1 : false;
+  }
+
   return Object.freeze({
     NODE_ENV: nodeEnv,
     PORT: port,
@@ -108,6 +134,7 @@ export function getEnvConfig(envSource = process.env) {
     SESSION_MAX_AGE_MS: sessionMaxAgeMs,
     SESSION_COOKIE_NAME: sessionCookieName,
     COOKIE_SAME_SITE: cookieSameSite,
+    TRUST_PROXY: trustProxy,
     isProduction: nodeEnv === 'production',
     isTest: nodeEnv === 'test',
     isDevelopment: nodeEnv === 'development'

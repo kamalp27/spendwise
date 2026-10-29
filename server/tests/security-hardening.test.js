@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest';
+import http from 'http';
+import express from 'express';
 import { resolveSslConfig } from '../src/db/pool.js';
 import { getEnvConfig } from '../src/config/env.js';
+import { createApp } from '../src/app.js';
 
 describe('Stage 6.2D7 — Production Security Hardening', () => {
   describe('1. PostgreSQL TLS / SSL Configuration Hardening', () => {
@@ -169,6 +172,120 @@ describe('Stage 6.2D7 — Production Security Hardening', () => {
         });
         expect(config.COOKIE_SAME_SITE).toBe(mode);
       });
+    });
+  });
+
+  describe('3. Production Reverse Proxy Trust Configuration (Render / PaaS)', () => {
+    const validDevEnv = {
+      NODE_ENV: 'development',
+      PORT: '5000',
+      CLIENT_URL: 'http://localhost:5173',
+      SESSION_SECRET: '0123456789012345678901234567890123456789'
+    };
+
+    it('defaults TRUST_PROXY to 1 in production mode when not explicitly configured', () => {
+      const prodEnv = getEnvConfig({
+        NODE_ENV: 'production',
+        PORT: '5000',
+        CLIENT_URL: 'https://spendwise.app',
+        SESSION_SECRET: 'a_very_strong_custom_production_session_secret_123456789'
+      });
+      expect(prodEnv.TRUST_PROXY).toBe(1);
+    });
+
+    it('defaults TRUST_PROXY to false in development and test environments', () => {
+      const devEnv = getEnvConfig(validDevEnv);
+      expect(devEnv.TRUST_PROXY).toBe(false);
+
+      const testEnv = getEnvConfig({ ...validDevEnv, NODE_ENV: 'test' });
+      expect(testEnv.TRUST_PROXY).toBe(false);
+    });
+
+    it('treats empty or whitespace-only TRUST_PROXY as unconfigured and falls back to default', () => {
+      const prodEnv = getEnvConfig({
+        NODE_ENV: 'production',
+        PORT: '5000',
+        CLIENT_URL: 'https://spendwise.app',
+        SESSION_SECRET: 'a_very_strong_custom_production_session_secret_123456789',
+        TRUST_PROXY: '   '
+      });
+      expect(prodEnv.TRUST_PROXY).toBe(1);
+
+      const devEnv = getEnvConfig({ ...validDevEnv, TRUST_PROXY: '   ' });
+      expect(devEnv.TRUST_PROXY).toBe(false);
+    });
+
+    it('parses explicit integer TRUST_PROXY values', () => {
+      const config = getEnvConfig({ ...validDevEnv, TRUST_PROXY: '2' });
+      expect(config.TRUST_PROXY).toBe(2);
+
+      const zeroConfig = getEnvConfig({ ...validDevEnv, TRUST_PROXY: '0' });
+      expect(zeroConfig.TRUST_PROXY).toBe(0);
+    });
+
+    it('rejects negative integer TRUST_PROXY values', () => {
+      expect(() => {
+        getEnvConfig({ ...validDevEnv, TRUST_PROXY: '-1' });
+      }).toThrow(/TRUST_PROXY cannot be a negative integer/);
+    });
+
+    it('rejects floating-point hop count values', () => {
+      expect(() => {
+        getEnvConfig({ ...validDevEnv, TRUST_PROXY: '1.5' });
+      }).toThrow(/Invalid TRUST_PROXY hop count "1.5"\. Hop count must be an integer\./);
+    });
+
+    it('parses explicit boolean TRUST_PROXY values', () => {
+      expect(getEnvConfig({ ...validDevEnv, TRUST_PROXY: 'true' }).TRUST_PROXY).toBe(true);
+      expect(getEnvConfig({ ...validDevEnv, TRUST_PROXY: 'false' }).TRUST_PROXY).toBe(false);
+    });
+
+    it('preserves custom string TRUST_PROXY values (e.g. subnet or loopback)', () => {
+      const config = getEnvConfig({ ...validDevEnv, TRUST_PROXY: 'loopback' });
+      expect(config.TRUST_PROXY).toBe('loopback');
+    });
+
+    it('configures Express trust proxy setting correctly when trustProxy: 1 is provided', () => {
+      const app = createApp({ trustProxy: 1 });
+      expect(app.get('trust proxy')).toBe(1);
+    });
+
+    it('leaves Express trust proxy as false when trustProxy: false is provided', () => {
+      const app = createApp({ trustProxy: false });
+      expect(app.get('trust proxy')).toBe(false);
+    });
+
+    it('safely extracts client IP from X-Forwarded-For with 1 trusted proxy hop and ignores upstream spoofed IPs', async () => {
+      const app = express();
+      app.set('trust proxy', 1);
+      let capturedIp = null;
+      let capturedSecure = null;
+
+      app.get('/test-proxy-ip', (req, res) => {
+        capturedIp = req.ip;
+        capturedSecure = req.secure;
+        res.status(200).json({ ok: true });
+      });
+
+      await new Promise((resolve) => {
+        const req = new http.IncomingMessage();
+        req.method = 'GET';
+        req.url = '/test-proxy-ip';
+        req.headers = {
+          host: 'localhost:5000',
+          'x-forwarded-for': '198.51.100.1, 203.0.113.195', // 198.51.100.1 is upstream/spoofed; 203.0.113.195 is real client
+          'x-forwarded-proto': 'https'
+        };
+        req.socket = { remoteAddress: '10.0.0.1' }; // Immediate proxy address (e.g. Render load balancer)
+
+        const res = new http.ServerResponse(req);
+        res.end = () => resolve();
+        app.handle(req, res);
+      });
+
+      // Express with trust proxy: 1 trusts 1 hop from the socket (10.0.0.1), resolving to 203.0.113.195
+      expect(capturedIp).toBe('203.0.113.195');
+      expect(capturedSecure).toBe(true);
     });
   });
 });
