@@ -114,7 +114,7 @@ describe('DashboardOverview Feature & Metrics Verification (Stage 6.2E7)', () =>
     const onSelectTab = vi.fn();
 
     const { container } = renderWithAuth(
-      <DashboardOverview onSelectTab={onSelectTab} transactions={[]} />
+      <DashboardOverview onSelectTab={onSelectTab} transactions={[]} month={10} year={2026} />
     );
 
     await waitFor(() => {
