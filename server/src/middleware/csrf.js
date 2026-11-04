@@ -29,7 +29,11 @@ export function csrfProtection(req, res, next) {
   // 2. Validate Origin header if present
   if (req.headers.origin) {
     const requestOrigin = req.headers.origin.replace(/\/+$/, '');
-    if (requestOrigin !== env.CLIENT_URL) {
+    const allowedOrigins = env.CLIENT_URLS && env.CLIENT_URLS.length > 0
+      ? env.CLIENT_URLS
+      : [env.CLIENT_URL];
+
+    if (!allowedOrigins.includes(requestOrigin)) {
       return next(
         AppError.forbidden(
           `CSRF validation failed: Untrusted request origin "${req.headers.origin}".`,

@@ -25,19 +25,35 @@ export function getEnvConfig(envSource = process.env) {
   }
 
   let clientUrl = '';
+  let clientUrls = [];
+
   if (clientUrlRaw) {
     if (clientUrlRaw.includes('*')) {
       throw new Error('CLIENT_URL cannot contain wildcard ("*") characters.');
     }
-    try {
-      const parsedUrl = new URL(clientUrlRaw);
-      if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
-        throw new Error(`CLIENT_URL must use http or https protocol. Got "${parsedUrl.protocol}"`);
-      }
-      clientUrl = clientUrlRaw.replace(/\/+$/, ''); // strip any trailing slashes
-    } catch (err) {
-      throw new Error(`Invalid CLIENT_URL "${clientUrlRaw}": ${err.message}`);
+
+    const rawList = clientUrlRaw
+      .split(',')
+      .map((entry) => entry.trim())
+      .filter((entry) => entry.length > 0);
+
+    if (rawList.length === 0 && nodeEnv === 'production') {
+      throw new Error('CLIENT_URL environment variable is required in production mode.');
     }
+
+    clientUrls = rawList.map((entry) => {
+      try {
+        const parsedUrl = new URL(entry);
+        if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
+          throw new Error(`CLIENT_URL must use http or https protocol. Got "${parsedUrl.protocol}"`);
+        }
+        return entry.replace(/\/+$/, '');
+      } catch (err) {
+        throw new Error(`Invalid CLIENT_URL "${entry}": ${err.message}`);
+      }
+    });
+
+    clientUrl = clientUrls[0] || '';
   }
 
   const rateLimitWindowMsRaw = envSource.RATE_LIMIT_WINDOW_MS || '900000';
@@ -128,6 +144,7 @@ export function getEnvConfig(envSource = process.env) {
     NODE_ENV: nodeEnv,
     PORT: port,
     CLIENT_URL: clientUrl,
+    CLIENT_URLS: Object.freeze(clientUrls),
     RATE_LIMIT_WINDOW_MS: rateLimitWindowMs,
     RATE_LIMIT_MAX: rateLimitMax,
     SESSION_SECRET: sessionSecret,

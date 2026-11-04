@@ -72,6 +72,7 @@ describe('Auth Controller & Registration Session Lifecycle (Task 2)', () => {
       expect(res.status).toHaveBeenCalledWith(201);
       expect(res.body.success).toBe(true);
       expect(res.body.data.id).toBe(newUser.id);
+      expect(res.body.data.token).toBe('s:fresh_session_sid_1.valid_hmac');
 
       // Verify regenerateSession was called with null oldSid (no prior session)
       expect(SessionService.regenerateSession).toHaveBeenCalledWith(
@@ -248,10 +249,143 @@ describe('Auth Controller & Registration Session Lifecycle (Task 2)', () => {
 
       expect(next).not.toHaveBeenCalled();
       expect(res.status).toHaveBeenCalledWith(200);
+      expect(res.body.data.id).toBe(loggedInUser.id);
+      expect(res.body.data.token).toBe('s:new_login_sid.hmac');
       expect(SessionService.regenerateSession).toHaveBeenCalledWith(
         mockDb,
         priorSid,
         loggedInUser.id,
+        {},
+        req
+      );
+    });
+
+    it('should rotate session and revoke prior session when logging in with an existing valid Bearer token', async () => {
+      const priorSid = 'bearer_prior_sid_888';
+      const priorSignedBearer = signSessionId(priorSid, env.SESSION_SECRET);
+
+      const loggedInUser = {
+        id: 'user-relogin-bearer',
+        email: 'relogin@spendwise.example',
+        displayName: 'Relogin User',
+        currency: 'INR'
+      };
+
+      vi.spyOn(AuthService, 'login').mockResolvedValue(loggedInUser);
+      vi.spyOn(SessionService, 'regenerateSession').mockResolvedValue({
+        sid: 'new_bearer_login_sid',
+        signedCookie: 's:new_bearer_login_sid.hmac',
+        expire: new Date(Date.now() + 600000)
+      });
+
+      const req = {
+        body: {
+          email: 'relogin@spendwise.example',
+          password: 'ValidPassword123!'
+        },
+        cookies: {},
+        signedCookies: {},
+        headers: {
+          authorization: `Bearer ${priorSignedBearer}`
+        },
+        app: { locals: { db: mockDb } }
+      };
+
+      await AuthController.login(req, res, next);
+
+      expect(next).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(SessionService.regenerateSession).toHaveBeenCalledWith(
+        mockDb,
+        priorSid,
+        loggedInUser.id,
+        {},
+        req
+      );
+    });
+
+    it('should NOT revoke unrelated sessions when logging in with a malformed or invalid Bearer token', async () => {
+      const loggedInUser = {
+        id: 'user-invalid-bearer',
+        email: 'invalidbearer@spendwise.example',
+        displayName: 'Invalid Bearer User',
+        currency: 'INR'
+      };
+
+      vi.spyOn(AuthService, 'login').mockResolvedValue(loggedInUser);
+      vi.spyOn(SessionService, 'regenerateSession').mockResolvedValue({
+        sid: 'safe_fresh_sid',
+        signedCookie: 's:safe_fresh_sid.hmac',
+        expire: new Date(Date.now() + 600000)
+      });
+
+      const req = {
+        body: {
+          email: 'invalidbearer@spendwise.example',
+          password: 'ValidPassword123!'
+        },
+        cookies: {},
+        signedCookies: {},
+        headers: {
+          authorization: 'Bearer s:tampered_sid.invalid_hmac_signature'
+        },
+        app: { locals: { db: mockDb } }
+      };
+
+      await AuthController.login(req, res, next);
+
+      expect(next).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(200);
+      // Malformed Bearer token must not resolve to an oldSid; regenerateSession must be called with null oldSid
+      expect(SessionService.regenerateSession).toHaveBeenCalledWith(
+        mockDb,
+        null,
+        loggedInUser.id,
+        {},
+        req
+      );
+    });
+
+    it('should rotate session and revoke prior session when registering with an existing valid Bearer token', async () => {
+      const priorSid = 'bearer_reg_prior_sid_999';
+      const priorSignedBearer = signSessionId(priorSid, env.SESSION_SECRET);
+
+      const registeredUser = {
+        id: 'user-reg-bearer',
+        email: 'regbearer@spendwise.example',
+        displayName: 'Reg Bearer User',
+        currency: 'INR'
+      };
+
+      vi.spyOn(AuthService, 'register').mockResolvedValue(registeredUser);
+      vi.spyOn(SessionService, 'regenerateSession').mockResolvedValue({
+        sid: 'fresh_reg_bearer_sid',
+        signedCookie: 's:fresh_reg_bearer_sid.hmac',
+        expire: new Date(Date.now() + 600000)
+      });
+
+      const req = {
+        body: {
+          email: 'regbearer@spendwise.example',
+          password: 'ValidPassword123!',
+          displayName: 'Reg Bearer User'
+        },
+        cookies: {},
+        signedCookies: {},
+        headers: {
+          authorization: `Bearer ${priorSignedBearer}`
+        },
+        app: { locals: { db: mockDb } }
+      };
+
+      await AuthController.register(req, res, next);
+
+      expect(next).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(201);
+      expect(SessionService.regenerateSession).toHaveBeenCalledWith(
+        mockDb,
+        priorSid,
+        registeredUser.id,
         {},
         req
       );
@@ -263,6 +397,29 @@ describe('Auth Controller & Registration Session Lifecycle (Task 2)', () => {
 
       const req = {
         sessionId: activeSid,
+        cookies: {},
+        signedCookies: {},
+        app: { locals: { db: mockDb } }
+      };
+
+      await AuthController.logout(req, res, next);
+
+      expect(next).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(SessionService.revokeSession).toHaveBeenCalledWith(mockDb, activeSid);
+      expect(cookiesCleared[env.SESSION_COOKIE_NAME]).toBeDefined();
+    });
+
+    it('should revoke active session from database on logout when authenticated via Authorization Bearer header', async () => {
+      const activeSid = 'bearer_logout_session_sid_777';
+      const signedBearerToken = signSessionId(activeSid, env.SESSION_SECRET);
+      vi.spyOn(SessionService, 'revokeSession').mockResolvedValue(true);
+
+      const req = {
+        sessionId: null, // Test fallback extraction from header if not pre-populated
+        headers: {
+          authorization: `Bearer ${signedBearerToken}`
+        },
         cookies: {},
         signedCookies: {},
         app: { locals: { db: mockDb } }

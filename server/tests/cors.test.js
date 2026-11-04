@@ -160,4 +160,71 @@ describe('CORS Configuration (In-Memory Middleware Test)', () => {
     expect(err).toBeInstanceOf(Error);
     expect(err.message).toContain('CORS origin not allowed');
   });
+
+  describe('Multi-Origin CORS Support (Dual Origins: Vercel & GitHub Pages)', () => {
+    const multiOriginApp = createApp({
+      allowedOrigins: [
+        'https://spendwise-nine-gules.vercel.app',
+        'https://kamalp27.github.io'
+      ]
+    });
+    const multiCorsLayer = multiOriginApp._router.stack.find((l) => l.name === 'corsMiddleware');
+
+    it('allows requests from primary Vercel origin with credentials', () => {
+      const headersSet = {};
+      const req = {
+        method: 'GET',
+        headers: { origin: 'https://spendwise-nine-gules.vercel.app' }
+      };
+      const res = {
+        setHeader: vi.fn((k, v) => { headersSet[k.toLowerCase()] = v; }),
+        getHeader: vi.fn((k) => headersSet[k.toLowerCase()])
+      };
+      const next = vi.fn();
+
+      multiCorsLayer.handle(req, res, next);
+
+      expect(next).toHaveBeenCalledWith();
+      expect(headersSet['access-control-allow-origin']).toBe('https://spendwise-nine-gules.vercel.app');
+      expect(headersSet['access-control-allow-credentials']).toBe('true');
+    });
+
+    it('allows requests from secondary GitHub Pages origin with credentials', () => {
+      const headersSet = {};
+      const req = {
+        method: 'GET',
+        headers: { origin: 'https://kamalp27.github.io' }
+      };
+      const res = {
+        setHeader: vi.fn((k, v) => { headersSet[k.toLowerCase()] = v; }),
+        getHeader: vi.fn((k) => headersSet[k.toLowerCase()])
+      };
+      const next = vi.fn();
+
+      multiCorsLayer.handle(req, res, next);
+
+      expect(next).toHaveBeenCalledWith();
+      expect(headersSet['access-control-allow-origin']).toBe('https://kamalp27.github.io');
+      expect(headersSet['access-control-allow-credentials']).toBe('true');
+    });
+
+    it('rejects an unapproved origin in a multi-origin deployment', () => {
+      const req = {
+        method: 'GET',
+        headers: { origin: 'https://malicious-phishing.example.com' }
+      };
+      const res = {
+        setHeader: vi.fn(),
+        getHeader: vi.fn()
+      };
+      const next = vi.fn();
+
+      multiCorsLayer.handle(req, res, next);
+
+      expect(next).toHaveBeenCalledTimes(1);
+      const err = next.mock.calls[0][0];
+      expect(err).toBeInstanceOf(Error);
+      expect(err.message).toContain('CORS origin not allowed: https://malicious-phishing.example.com');
+    });
+  });
 });

@@ -92,7 +92,41 @@ describe('Stage 6.2D7 — Production Security Hardening', () => {
 
       expect(prodEnv.isProduction).toBe(true);
       expect(prodEnv.CLIENT_URL).toBe('https://spendwise.app');
+      expect(prodEnv.CLIENT_URLS).toEqual(['https://spendwise.app']);
       expect(prodEnv.COOKIE_SAME_SITE).toBe('lax');
+    });
+
+    it('supports comma-separated CLIENT_URL for dual-origin production deployments', () => {
+      const prodEnv = getEnvConfig({
+        NODE_ENV: 'production',
+        PORT: '5000',
+        CLIENT_URL: 'https://spendwise-nine-gules.vercel.app, https://kamalp27.github.io/ ',
+        SESSION_SECRET: 'a_very_strong_custom_production_session_secret_123456789'
+      });
+
+      expect(prodEnv.CLIENT_URL).toBe('https://spendwise-nine-gules.vercel.app');
+      expect(prodEnv.CLIENT_URLS).toEqual([
+        'https://spendwise-nine-gules.vercel.app',
+        'https://kamalp27.github.io'
+      ]);
+    });
+
+    it('rejects comma-separated CLIENT_URL if any origin contains a wildcard', () => {
+      expect(() => {
+        getEnvConfig({
+          ...validDevEnv,
+          CLIENT_URL: 'https://spendwise.app, *'
+        });
+      }).toThrow(/CLIENT_URL cannot contain wildcard/);
+    });
+
+    it('rejects comma-separated CLIENT_URL if any origin has an invalid protocol', () => {
+      expect(() => {
+        getEnvConfig({
+          ...validDevEnv,
+          CLIENT_URL: 'https://spendwise.app, ftp://malicious.org'
+        });
+      }).toThrow(/CLIENT_URL must use http or https protocol/);
     });
 
     it('throws error when CLIENT_URL is missing in production mode', () => {

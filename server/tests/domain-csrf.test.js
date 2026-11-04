@@ -391,4 +391,24 @@ describe('Domain Routes CSRF Protection & Preflights (Stage 6.2D2 / 6.2D5)', () 
       expect(res.headers['access-control-allow-headers']).toContain('X-Requested-With');
     });
   });
+
+  describe('6. Dual-Origin CSRF Origin Verification', () => {
+    it('rejects mutating request from untrusted origin with 403 Forbidden', async () => {
+      const res = await dispatch(app, {
+        method: 'POST',
+        url: '/api/v1/expenses',
+        headers: {
+          cookie: AUTH_COOKIE_HEADER,
+          'content-type': 'application/json',
+          'x-requested-with': 'XMLHttpRequest',
+          origin: 'https://attacker.example.org'
+        },
+        body: { title: 'Malicious Mutation' }
+      });
+
+      expect(res.status).toBe(403);
+      expect(res.body.success).toBe(false);
+      expect(res.body.error.code).toBe('FORBIDDEN');
+    });
+  });
 });

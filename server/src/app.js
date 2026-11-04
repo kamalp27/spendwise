@@ -15,7 +15,10 @@ import { csrfProtection } from './middleware/csrf.js';
 import { notFoundHandler } from './middleware/not-found.js';
 import { errorHandler } from './middleware/error-handler.js';
 
-export function createApp({ trustProxy = env.TRUST_PROXY } = {}) {
+export function createApp({
+  trustProxy = env.TRUST_PROXY,
+  allowedOrigins = (env.CLIENT_URLS && env.CLIENT_URLS.length > 0 ? env.CLIENT_URLS : [env.CLIENT_URL])
+} = {}) {
   const app = express();
 
   // 1. Reverse Proxy Trust Configuration (Render / production PaaS)
@@ -27,7 +30,6 @@ export function createApp({ trustProxy = env.TRUST_PROXY } = {}) {
   app.use(helmet());
 
   // 3. Strict CORS Configuration
-  const allowedOrigin = env.CLIENT_URL;
   app.use(
     cors({
       origin: (origin, callback) => {
@@ -37,7 +39,7 @@ export function createApp({ trustProxy = env.TRUST_PROXY } = {}) {
         }
 
         const normalizedOrigin = origin.replace(/\/+$/, '');
-        if (normalizedOrigin === allowedOrigin) {
+        if (allowedOrigins.includes(normalizedOrigin)) {
           return callback(null, true);
         }
 

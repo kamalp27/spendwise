@@ -22,6 +22,17 @@ export async function sessionAuthMiddleware(req, res, next) {
       sid = unsignSessionId(rawCookie, env.SESSION_SECRET);
     }
 
+    // Fallback: Check for Bearer token in Authorization header when session cookie is absent
+    if (!sid) {
+      const authHeader = req.headers?.authorization;
+      if (typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) {
+        const rawToken = authHeader.slice(7).trim();
+        if (rawToken) {
+          sid = unsignSessionId(rawToken, env.SESSION_SECRET);
+        }
+      }
+    }
+
     if (!sid) {
       return next(
         AppError.unauthorized(
