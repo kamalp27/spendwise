@@ -5,6 +5,11 @@ import { AuthProvider, useAuth, AuthContext } from '../src/context/AuthContext.j
 import { AuthService } from '../src/services/auth.service.js';
 import { CategoryService } from '../src/services/category.service.js';
 import { ExpenseService } from '../src/services/expense.service.js';
+import {
+  AUTH_TOKEN_KEY,
+  setAuthModeForTesting,
+  resetAuthModeForTesting
+} from '../src/services/auth-token.js';
 import App from '../src/App.jsx';
 
 // Test consumer component exposing AuthContext values and actions
@@ -40,6 +45,8 @@ describe('Frontend Authentication Context & Session Restoration (Stage 6.2D3)', 
   });
 
   afterEach(() => {
+    resetAuthModeForTesting();
+    sessionStorage.clear();
     vi.restoreAllMocks();
   });
 
@@ -623,6 +630,316 @@ describe('Frontend Authentication Context & Session Restoration (Stage 6.2D3)', 
       // The resolved data must NOT be rendered or repopulate the dashboard
       expect(screen.queryByText('Secret Stale Transaction')).toBeNull();
       expect(screen.getByText('Authentication Required')).toBeDefined();
+    });
+  });
+
+  describe('Dual Authentication Mode & Session Token Lifecycle (Stage 2)', () => {
+    describe('Cookie Mode (Default / Vercel)', () => {
+      it('login sets authenticated user and does NOT store token in sessionStorage', async () => {
+        resetAuthModeForTesting(); // default cookie mode
+        const mockUser = {
+          id: 'usr-cookie-1',
+          email: 'cookie@spendwise.example',
+          displayName: 'Cookie User',
+          currency: 'INR',
+          token: 's:server_issued_token.sig'
+        };
+
+        vi.spyOn(AuthService, 'getProfile').mockRejectedValueOnce({ status: 401 });
+        const loginSpy = vi.spyOn(AuthService, 'login').mockResolvedValueOnce(mockUser);
+
+        let authCtx;
+        render(
+          <AuthProvider>
+            <TestConsumer onMount={(auth) => { authCtx = auth; }} />
+          </AuthProvider>
+        );
+
+        await waitFor(() => {
+          expect(screen.getByTestId('auth-status').textContent).toBe('unauthenticated');
+        });
+
+        await act(async () => {
+          await authCtx.login({ email: 'cookie@spendwise.example', password: 'Password123!' });
+        });
+
+        expect(loginSpy).toHaveBeenCalledWith({ email: 'cookie@spendwise.example', password: 'Password123!' });
+        expect(screen.getByTestId('auth-status').textContent).toBe('authenticated');
+        // Session storage must remain completely untouched in cookie mode
+        expect(sessionStorage.getItem(AUTH_TOKEN_KEY)).toBeNull();
+        expect(authCtx.user.token).toBeUndefined();
+      });
+
+      it('register sets authenticated user and does NOT store token in sessionStorage', async () => {
+        resetAuthModeForTesting();
+        const mockUser = {
+          id: 'usr-cookie-reg',
+          email: 'reg@spendwise.example',
+          displayName: 'Registered Cookie User',
+          currency: 'INR',
+          token: 's:server_issued_token.sig'
+        };
+
+        vi.spyOn(AuthService, 'getProfile').mockRejectedValueOnce({ status: 401 });
+        const regSpy = vi.spyOn(AuthService, 'register').mockResolvedValueOnce(mockUser);
+
+        let authCtx;
+        render(
+          <AuthProvider>
+            <TestConsumer onMount={(auth) => { authCtx = auth; }} />
+          </AuthProvider>
+        );
+
+        await waitFor(() => {
+          expect(screen.getByTestId('auth-status').textContent).toBe('unauthenticated');
+        });
+
+        await act(async () => {
+          await authCtx.register({
+            email: 'reg@spendwise.example',
+            password: 'Password123!',
+            displayName: 'Registered Cookie User',
+            currency: 'INR'
+          });
+        });
+
+        expect(regSpy).toHaveBeenCalled();
+        expect(screen.getByTestId('auth-status').textContent).toBe('authenticated');
+        expect(sessionStorage.getItem(AUTH_TOKEN_KEY)).toBeNull();
+        expect(authCtx.user.token).toBeUndefined();
+      });
+
+      it('logout calls backend logout without modifying sessionStorage', async () => {
+        resetAuthModeForTesting();
+        const mockProfile = { id: 'usr-logout-test', email: 'test@example.com' };
+        vi.spyOn(AuthService, 'getProfile').mockResolvedValueOnce(mockProfile);
+        const logoutSpy = vi.spyOn(AuthService, 'logout').mockResolvedValueOnce({ message: 'Logged out' });
+
+        let authCtx;
+        render(
+          <AuthProvider>
+            <TestConsumer onMount={(auth) => { authCtx = auth; }} />
+          </AuthProvider>
+        );
+
+        await waitFor(() => {
+          expect(screen.getByTestId('auth-status').textContent).toBe('authenticated');
+        });
+
+        await act(async () => {
+          await authCtx.logout();
+        });
+
+        expect(logoutSpy).toHaveBeenCalledTimes(1);
+        expect(screen.getByTestId('auth-status').textContent).toBe('unauthenticated');
+        expect(sessionStorage.getItem(AUTH_TOKEN_KEY)).toBeNull();
+      });
+    });
+
+    describe('Token Mode (GitHub Pages)', () => {
+      beforeEach(() => {
+        setAuthModeForTesting('token');
+      });
+
+      afterEach(() => {
+        resetAuthModeForTesting();
+      });
+
+      it('login stores returned data.token in sessionStorage under spendwise_auth_token', async () => {
+        const mockUserWithToken = {
+          id: 'usr-token-mode-1',
+          email: 'token@spendwise.example',
+          displayName: 'Token User',
+          currency: 'INR',
+          token: 's:github_pages_session_token.hmac_valid'
+        };
+
+        const loginSpy = vi.spyOn(AuthService, 'login').mockResolvedValueOnce(mockUserWithToken);
+
+        let authCtx;
+        render(
+          <AuthProvider initialStatus="unauthenticated">
+            <TestConsumer onMount={(auth) => { authCtx = auth; }} />
+          </AuthProvider>
+        );
+
+        expect(screen.getByTestId('auth-status').textContent).toBe('unauthenticated');
+        expect(sessionStorage.getItem(AUTH_TOKEN_KEY)).toBeNull();
+
+        await act(async () => {
+          await authCtx.login({ email: 'token@spendwise.example', password: 'Password123!' });
+        });
+
+        expect(loginSpy).toHaveBeenCalledTimes(1);
+        expect(screen.getByTestId('auth-status').textContent).toBe('authenticated');
+        // Token must be safely stored in sessionStorage
+        expect(sessionStorage.getItem(AUTH_TOKEN_KEY)).toBe('s:github_pages_session_token.hmac_valid');
+        // Token must NOT be exposed in the React user state
+        expect(authCtx.user.token).toBeUndefined();
+        expect(authCtx.user.id).toBe('usr-token-mode-1');
+      });
+
+      it('register stores returned data.token in sessionStorage under spendwise_auth_token', async () => {
+        const mockRegWithToken = {
+          id: 'usr-token-reg-1',
+          email: 'regtoken@spendwise.example',
+          displayName: 'Reg Token User',
+          currency: 'INR',
+          token: 's:registration_session_token.hmac_valid'
+        };
+
+        const regSpy = vi.spyOn(AuthService, 'register').mockResolvedValueOnce(mockRegWithToken);
+
+        let authCtx;
+        render(
+          <AuthProvider initialStatus="unauthenticated">
+            <TestConsumer onMount={(auth) => { authCtx = auth; }} />
+          </AuthProvider>
+        );
+
+        await act(async () => {
+          await authCtx.register({
+            email: 'regtoken@spendwise.example',
+            password: 'Password123!',
+            displayName: 'Reg Token User',
+            currency: 'INR'
+          });
+        });
+
+        expect(regSpy).toHaveBeenCalledTimes(1);
+        expect(screen.getByTestId('auth-status').textContent).toBe('authenticated');
+        expect(sessionStorage.getItem(AUTH_TOKEN_KEY)).toBe('s:registration_session_token.hmac_valid');
+        // Token must NOT be exposed in the React user state
+        expect(authCtx.user.token).toBeUndefined();
+        expect(authCtx.user.id).toBe('usr-token-reg-1');
+      });
+
+      it('restores authenticated session on mount (page refresh) when token exists in sessionStorage', async () => {
+        sessionStorage.setItem(AUTH_TOKEN_KEY, 's:refreshed_session_credential.hmac_valid');
+
+        const mockProfile = {
+          id: 'usr-token-refresh-1',
+          email: 'refreshed@spendwise.example',
+          displayName: 'Refreshed User',
+          currency: 'INR'
+        };
+
+        const getProfileSpy = vi.spyOn(AuthService, 'getProfile').mockResolvedValueOnce(mockProfile);
+
+        render(
+          <AuthProvider>
+            <TestConsumer />
+          </AuthProvider>
+        );
+
+        expect(screen.getByTestId('auth-status').textContent).toBe('loading');
+
+        await waitFor(() => {
+          expect(screen.getByTestId('auth-status').textContent).toBe('authenticated');
+        });
+
+        expect(getProfileSpy).toHaveBeenCalledTimes(1);
+        const userText = screen.getByTestId('auth-user').textContent;
+        expect(JSON.parse(userText).email).toBe('refreshed@spendwise.example');
+      });
+
+      it('transitions to unauthenticated on mount when no token exists in sessionStorage without calling GET /auth/me', async () => {
+        sessionStorage.clear();
+        const getProfileSpy = vi.spyOn(AuthService, 'getProfile');
+
+        render(
+          <AuthProvider>
+            <TestConsumer />
+          </AuthProvider>
+        );
+
+        await waitFor(() => {
+          expect(screen.getByTestId('auth-status').textContent).toBe('unauthenticated');
+        });
+
+        expect(getProfileSpy).not.toHaveBeenCalled();
+        expect(screen.getByTestId('auth-user').textContent).toBe('null');
+        expect(screen.getByTestId('auth-error').textContent).toBe('null');
+      });
+
+      it('invalid token on session restoration (HTTP 401) clears stored token and transitions to unauthenticated', async () => {
+        sessionStorage.setItem(AUTH_TOKEN_KEY, 's:invalid_tampered_token.bad_hmac');
+
+        const unauthError = new Error('Session expired');
+        unauthError.status = 401;
+        unauthError.code = 'SESSION_EXPIRED';
+
+        vi.spyOn(AuthService, 'getProfile').mockRejectedValueOnce(unauthError);
+
+        render(
+          <AuthProvider>
+            <TestConsumer />
+          </AuthProvider>
+        );
+
+        await waitFor(() => {
+          expect(screen.getByTestId('auth-status').textContent).toBe('unauthenticated');
+        });
+
+        expect(screen.getByTestId('auth-user').textContent).toBe('null');
+        expect(screen.getByTestId('auth-error').textContent).toBe('null');
+      });
+
+      it('logout calls backend logout with session intact then clears sessionStorage', async () => {
+        sessionStorage.setItem(AUTH_TOKEN_KEY, 's:active_token_to_logout.sig');
+
+        let tokenDuringLogoutCall = null;
+        const logoutSpy = vi.spyOn(AuthService, 'logout').mockImplementationOnce(async () => {
+          tokenDuringLogoutCall = sessionStorage.getItem(AUTH_TOKEN_KEY);
+          return { message: 'Logged out successfully.' };
+        });
+
+        let authCtx;
+        render(
+          <AuthProvider initialStatus="authenticated" initialUser={{ id: 'usr-1' }}>
+            <TestConsumer onMount={(auth) => { authCtx = auth; }} />
+          </AuthProvider>
+        );
+
+        await act(async () => {
+          await authCtx.logout();
+        });
+
+        expect(logoutSpy).toHaveBeenCalledTimes(1);
+        // Token was still present in sessionStorage when backend logout was called
+        expect(tokenDuringLogoutCall).toBe('s:active_token_to_logout.sig');
+        // Token was cleared after logout completed
+        expect(sessionStorage.getItem(AUTH_TOKEN_KEY)).toBeNull();
+        expect(screen.getByTestId('auth-status').textContent).toBe('unauthenticated');
+      });
+
+      it('logout clears sessionStorage even when backend logout fails with network or server error', async () => {
+        sessionStorage.setItem(AUTH_TOKEN_KEY, 's:active_token_server_down.sig');
+
+        const serverError = new Error('Server unavailable');
+        serverError.status = 500;
+        serverError.code = 'INTERNAL_SERVER_ERROR';
+
+        vi.spyOn(AuthService, 'logout').mockRejectedValueOnce(serverError);
+
+        let authCtx;
+        render(
+          <AuthProvider initialStatus="authenticated" initialUser={{ id: 'usr-1' }}>
+            <TestConsumer onMount={(auth) => { authCtx = auth; }} />
+          </AuthProvider>
+        );
+
+        await act(async () => {
+          const res = await authCtx.logout();
+          expect(res.success).toBe(true);
+          expect(res.error).toBeDefined();
+        });
+
+        // Token MUST be cleared even though backend failed
+        expect(sessionStorage.getItem(AUTH_TOKEN_KEY)).toBeNull();
+        expect(screen.getByTestId('auth-status').textContent).toBe('unauthenticated');
+        expect(screen.getByTestId('auth-user').textContent).toBe('null');
+      });
     });
   });
 });

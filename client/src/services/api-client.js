@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { isTokenAuthMode, getStoredToken, clearStoredToken } from './auth-token.js';
 
 export const DEFAULT_API_BASE_URL = 'http://localhost:5000/api/v1';
 export const DEFAULT_TIMEOUT_MS = 30000;
@@ -18,6 +19,34 @@ export function getApiBaseUrl() {
   }
 
   return DEFAULT_API_BASE_URL;
+}
+
+/**
+ * Validates whether a request target URL points to the SpendWise backend API,
+ * preventing accidental credential leakage to third-party endpoints.
+ */
+export function isApiUrl(url, baseURL = getApiBaseUrl()) {
+  if (!url) {
+    return true;
+  }
+
+  // Explicitly reject protocol-relative URLs (e.g., '//evil.example.com/api')
+  if (typeof url === 'string' && url.startsWith('//')) {
+    return false;
+  }
+
+  // Relative paths (e.g., '/auth/me', 'expenses') route to the API baseURL
+  if (!/^https?:\/\//i.test(url)) {
+    return true;
+  }
+
+  try {
+    const targetOrigin = new URL(url).origin;
+    const baseOrigin = new URL(baseURL || getApiBaseUrl()).origin;
+    return targetOrigin === baseOrigin;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -54,7 +83,8 @@ export const apiClient = axios.create({
   }
 });
 
-// Request Interceptor: Ensure state-changing requests always carry the CSRF custom header
+// Request Interceptor: Ensure state-changing requests always carry the CSRF custom header,
+// and attach Bearer token when running in token auth mode.
 apiClient.interceptors.request.use((config) => {
   const method = (config.method || 'get').toUpperCase();
   const stateChangingMethods = ['POST', 'PUT', 'PATCH', 'DELETE'];
@@ -64,6 +94,18 @@ apiClient.interceptors.request.use((config) => {
       config.headers['X-Requested-With'] = 'XMLHttpRequest';
     }
   }
+
+  // Token mode: attach Authorization: Bearer <token> if available and target is the SpendWise API
+  if (isTokenAuthMode() && isApiUrl(config.url, config.baseURL)) {
+    const token = getStoredToken();
+    if (token) {
+      config.headers = config.headers || {};
+      if (!config.headers['Authorization'] && !config.headers['authorization']) {
+        config.headers['Authorization'] = `Bearer ${token}`;
+      }
+    }
+  }
+
   return config;
 });
 
@@ -85,6 +127,12 @@ apiClient.interceptors.response.use(
       const code =
         body?.error?.code ||
         (status === 500 ? 'INTERNAL_SERVER_ERROR' : `HTTP_${status}`);
+
+      // Clear stored token only on genuine authentication failure (HTTP 401 or account deactivated),
+      // preserving it across server errors (500), rate limiting (429), not found (404), validation (400), etc.
+      if (isTokenAuthMode() && (status === 401 || (status === 403 && code === 'ACCOUNT_DEACTIVATED'))) {
+        clearStoredToken();
+      }
 
       return Promise.reject(
         new ApiError(message, {

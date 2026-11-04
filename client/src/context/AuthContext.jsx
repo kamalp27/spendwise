@@ -1,5 +1,11 @@
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
 import { AuthService } from '../services/auth.service.js';
+import {
+  isTokenAuthMode,
+  getStoredToken,
+  setStoredToken,
+  clearStoredToken
+} from '../services/auth-token.js';
 
 /**
  * Default fallback context for components rendered outside an AuthProvider
@@ -77,6 +83,16 @@ export function AuthProvider({
       setError(null);
     }
 
+    // In token mode: if no token exists in sessionStorage, skip network call and set unauthenticated
+    if (isTokenAuthMode() && !getStoredToken()) {
+      if (isMountedRef.current && currentRequestId === requestIdRef.current) {
+        setUser(null);
+        setStatus('unauthenticated');
+        setError(null);
+      }
+      return null;
+    }
+
     try {
       const profile = await AuthService.getProfile();
 
@@ -133,8 +149,12 @@ export function AuthProvider({
     setError(null);
     try {
       const profile = await AuthService.login(credentials);
+      if (isTokenAuthMode() && profile?.token) {
+        setStoredToken(profile.token);
+      }
       if (isMountedRef.current) {
-        setUser(profile);
+        const { token: _token, ...safeUser } = profile || {};
+        setUser(safeUser);
         setStatus('authenticated');
         setError(null);
       }
@@ -162,8 +182,12 @@ export function AuthProvider({
     setError(null);
     try {
       const profile = await AuthService.register(data);
+      if (isTokenAuthMode() && profile?.token) {
+        setStoredToken(profile.token);
+      }
       if (isMountedRef.current) {
-        setUser(profile);
+        const { token: _token, ...safeUser } = profile || {};
+        setUser(safeUser);
         setStatus('authenticated');
         setError(null);
       }
@@ -205,6 +229,9 @@ export function AuthProvider({
         code: err.code || 'LOGOUT_WARNING'
       };
     } finally {
+      if (isTokenAuthMode()) {
+        clearStoredToken();
+      }
       if (isMountedRef.current) {
         setUser(null);
         setStatus('unauthenticated');

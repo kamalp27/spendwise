@@ -1,5 +1,14 @@
 import apiClient from './api-client.js';
 
+export {
+  AUTH_TOKEN_KEY,
+  getAuthMode,
+  isTokenAuthMode,
+  getStoredToken,
+  setStoredToken,
+  clearStoredToken
+} from './auth-token.js';
+
 /**
  * Authentication Service
  * Communicates with backend session authentication endpoints.

@@ -3,19 +3,37 @@ import {
   apiClient,
   ApiError,
   getApiBaseUrl,
+  isApiUrl,
   DEFAULT_API_BASE_URL,
   DEFAULT_TIMEOUT_MS
 } from '../src/services/api-client.js';
+import {
+  AUTH_TOKEN_KEY,
+  getAuthMode,
+  isTokenAuthMode,
+  getStoredToken,
+  setStoredToken,
+  clearStoredToken,
+  setAuthModeForTesting,
+  resetAuthModeForTesting
+} from '../src/services/auth-token.js';
 
 describe('API Client Configuration & Error Handling', () => {
   let originalAdapter;
 
   beforeEach(() => {
     originalAdapter = apiClient.defaults.adapter;
+    if (typeof sessionStorage !== 'undefined') {
+      sessionStorage.clear();
+    }
   });
 
   afterEach(() => {
     apiClient.defaults.adapter = originalAdapter;
+    resetAuthModeForTesting();
+    if (typeof sessionStorage !== 'undefined') {
+      sessionStorage.clear();
+    }
     vi.restoreAllMocks();
   });
 
@@ -312,6 +330,300 @@ describe('API Client Configuration & Error Handling', () => {
       }
 
       expect(failed).toBe(true);
+    });
+  });
+
+  describe('Authentication Mode & Dual-Origin Token Handling (Stage 2)', () => {
+    it('defaults to cookie auth mode when VITE_AUTH_MODE is unset or not "token"', () => {
+      resetAuthModeForTesting();
+      expect(getAuthMode()).toBe('cookie');
+      expect(isTokenAuthMode()).toBe(false);
+    });
+
+    it('resolves token mode when auth mode is set to "token"', () => {
+      setAuthModeForTesting('token');
+      expect(getAuthMode()).toBe('token');
+      expect(isTokenAuthMode()).toBe(true);
+    });
+
+    it('cookie mode does not read, write, or attach Bearer tokens to requests', async () => {
+      resetAuthModeForTesting(); // cookie mode
+      // Attempting to write token via safe helper in cookie mode is ignored
+      setStoredToken('test-secret-token');
+      expect(sessionStorage.getItem(AUTH_TOKEN_KEY)).toBeNull();
+      expect(getStoredToken()).toBeNull();
+
+      // Even if sessionStorage directly had an orphaned key, cookie mode must not attach it
+      sessionStorage.setItem(AUTH_TOKEN_KEY, 'orphaned-token');
+      expect(getStoredToken()).toBeNull();
+
+      let capturedConfig;
+      apiClient.defaults.adapter = async (config) => {
+        capturedConfig = config;
+        return {
+          status: 200,
+          statusText: 'OK',
+          headers: {},
+          config,
+          data: { success: true }
+        };
+      };
+
+      await apiClient.get('/auth/me');
+
+      expect(capturedConfig).toBeDefined();
+      expect(capturedConfig.headers['Authorization']).toBeUndefined();
+      expect(capturedConfig.headers['authorization']).toBeUndefined();
+      expect(capturedConfig.withCredentials).toBe(true);
+    });
+
+    it('token mode attaches Authorization Bearer header when token exists in sessionStorage', async () => {
+      setAuthModeForTesting('token');
+      setStoredToken('s:valid_session_123.hmac_signature');
+
+      let capturedConfig;
+      apiClient.defaults.adapter = async (config) => {
+        capturedConfig = config;
+        return {
+          status: 200,
+          statusText: 'OK',
+          headers: {},
+          config,
+          data: { success: true }
+        };
+      };
+
+      await apiClient.get('/auth/me');
+
+      expect(capturedConfig).toBeDefined();
+      expect(capturedConfig.headers['Authorization']).toBe('Bearer s:valid_session_123.hmac_signature');
+      expect(capturedConfig.withCredentials).toBe(true);
+    });
+
+    it('token mode does not attach Authorization header when no token is stored in sessionStorage', async () => {
+      setAuthModeForTesting('token');
+      clearStoredToken({ force: true });
+
+      let capturedConfig;
+      apiClient.defaults.adapter = async (config) => {
+        capturedConfig = config;
+        return {
+          status: 200,
+          statusText: 'OK',
+          headers: {},
+          config,
+          data: { success: true }
+        };
+      };
+
+      await apiClient.get('/expenses');
+
+      expect(capturedConfig).toBeDefined();
+      expect(capturedConfig.headers['Authorization']).toBeUndefined();
+    });
+
+    it('isApiUrl rejects protocol-relative URLs to protect against credential leakage', () => {
+      expect(isApiUrl('//malicious.example.com')).toBe(false);
+      expect(isApiUrl('//malicious.example.com/api/steal')).toBe(false);
+      expect(isApiUrl('//localhost:5000/api/v1')).toBe(false);
+    });
+
+    it('isApiUrl allows legitimate relative API paths and same-origin absolute URLs', () => {
+      // Legitimate relative paths
+      expect(isApiUrl('/auth/me')).toBe(true);
+      expect(isApiUrl('expenses')).toBe(true);
+      expect(isApiUrl('/categories?limit=50')).toBe(true);
+      expect(isApiUrl('')).toBe(true);
+      expect(isApiUrl(null)).toBe(true);
+
+      // Legitimate same-origin absolute URLs
+      const apiBase = getApiBaseUrl();
+      expect(isApiUrl(`${apiBase}/auth/me`)).toBe(true);
+      expect(isApiUrl(`${apiBase}/expenses`)).toBe(true);
+
+      // Third-party absolute URLs
+      expect(isApiUrl('https://evil.example.com/api')).toBe(false);
+      expect(isApiUrl('https://external-api.com/v1/data')).toBe(false);
+    });
+
+    it('token mode does not attach Bearer token to protocol-relative URLs', async () => {
+      setAuthModeForTesting('token');
+      setStoredToken('s:sensitive_token.signature');
+
+      let capturedConfig;
+      apiClient.defaults.adapter = async (config) => {
+        capturedConfig = config;
+        return {
+          status: 200,
+          statusText: 'OK',
+          headers: {},
+          config,
+          data: { success: true }
+        };
+      };
+
+      await apiClient.get('//malicious.example.com/api');
+
+      expect(capturedConfig).toBeDefined();
+      expect(capturedConfig.headers['Authorization']).toBeUndefined();
+    });
+
+    it('token mode does not attach Bearer token to unrelated external third-party URLs', async () => {
+      setAuthModeForTesting('token');
+      setStoredToken('s:sensitive_token.signature');
+
+      let capturedConfig;
+      apiClient.defaults.adapter = async (config) => {
+        capturedConfig = config;
+        return {
+          status: 200,
+          statusText: 'OK',
+          headers: {},
+          config,
+          data: { success: true }
+        };
+      };
+
+      await apiClient.get('https://external-service.example.com/api/data');
+
+      expect(capturedConfig).toBeDefined();
+      expect(capturedConfig.headers['Authorization']).toBeUndefined();
+    });
+
+    it('token mode attaches Bearer token to absolute URLs matching the SpendWise API origin', async () => {
+      setAuthModeForTesting('token');
+      setStoredToken('s:session_for_api.signature');
+
+      const apiBase = getApiBaseUrl(); // e.g. 'http://localhost:5000/api/v1'
+      let capturedConfig;
+      apiClient.defaults.adapter = async (config) => {
+        capturedConfig = config;
+        return {
+          status: 200,
+          statusText: 'OK',
+          headers: {},
+          config,
+          data: { success: true }
+        };
+      };
+
+      await apiClient.get(`${apiBase}/categories`);
+
+      expect(capturedConfig).toBeDefined();
+      expect(capturedConfig.headers['Authorization']).toBe('Bearer s:session_for_api.signature');
+    });
+
+    it('clears stored token in token mode on HTTP 401 Unauthorized response', async () => {
+      setAuthModeForTesting('token');
+      setStoredToken('s:expired_token.signature');
+      expect(getStoredToken()).toBe('s:expired_token.signature');
+
+      apiClient.defaults.adapter = async () => {
+        const error = new Error('Unauthorized');
+        error.response = {
+          status: 401,
+          statusText: 'Unauthorized',
+          headers: {},
+          data: {
+            success: false,
+            error: {
+              code: 'SESSION_EXPIRED',
+              message: 'Your session has expired.'
+            }
+          }
+        };
+        throw error;
+      };
+
+      await expect(apiClient.get('/expenses')).rejects.toThrow();
+
+      // Token must have been removed from sessionStorage
+      expect(getStoredToken()).toBeNull();
+      expect(sessionStorage.getItem(AUTH_TOKEN_KEY)).toBeNull();
+    });
+
+    it('clears stored token in token mode on HTTP 403 ACCOUNT_DEACTIVATED response', async () => {
+      setAuthModeForTesting('token');
+      setStoredToken('s:deactivated_user_token.signature');
+
+      apiClient.defaults.adapter = async () => {
+        const error = new Error('Forbidden');
+        error.response = {
+          status: 403,
+          statusText: 'Forbidden',
+          headers: {},
+          data: {
+            success: false,
+            error: {
+              code: 'ACCOUNT_DEACTIVATED',
+              message: 'Account access has been deactivated.'
+            }
+          }
+        };
+        throw error;
+      };
+
+      await expect(apiClient.get('/expenses')).rejects.toThrow();
+
+      expect(getStoredToken()).toBeNull();
+    });
+
+    it('does NOT clear stored token in token mode on HTTP 500, 404, 400, 429, or network errors', async () => {
+      setAuthModeForTesting('token');
+      const testToken = 's:durable_valid_session.signature';
+
+      // 1. HTTP 500 Internal Server Error
+      setStoredToken(testToken);
+      apiClient.defaults.adapter = async () => {
+        const error = new Error('Internal Server Error');
+        error.response = {
+          status: 500,
+          statusText: 'Internal Server Error',
+          headers: {},
+          data: { success: false, error: { code: 'INTERNAL_SERVER_ERROR' } }
+        };
+        throw error;
+      };
+      await expect(apiClient.get('/expenses')).rejects.toThrow();
+      expect(getStoredToken()).toBe(testToken);
+
+      // 2. HTTP 404 Not Found
+      apiClient.defaults.adapter = async () => {
+        const error = new Error('Not Found');
+        error.response = {
+          status: 404,
+          statusText: 'Not Found',
+          headers: {},
+          data: { success: false, error: { code: 'NOT_FOUND' } }
+        };
+        throw error;
+      };
+      await expect(apiClient.get('/expenses/999')).rejects.toThrow();
+      expect(getStoredToken()).toBe(testToken);
+
+      // 3. Network Error (offline / timed out)
+      apiClient.defaults.adapter = async () => {
+        const error = new Error('Network Error');
+        error.request = {};
+        throw error;
+      };
+      await expect(apiClient.get('/expenses')).rejects.toThrow();
+      expect(getStoredToken()).toBe(testToken);
+    });
+
+    it('safe storage helpers handle invalid or empty token inputs gracefully without exceptions', () => {
+      setAuthModeForTesting('token');
+      setStoredToken(null);
+      setStoredToken(undefined);
+      setStoredToken('');
+      setStoredToken(12345);
+      expect(getStoredToken()).toBeNull();
+
+      setStoredToken('   ');
+      expect(getStoredToken()).toBeNull();
+
+      setStoredToken('  valid_token  ');
+      expect(getStoredToken()).toBe('valid_token');
     });
   });
 });
